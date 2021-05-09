@@ -24,7 +24,7 @@ library(mondate) # deal with the date data
 ## 處理datalogger資料
 概要：讀取datalogger資料，並將其日期轉換成GMT+8,再建立每筆紀錄的年-月-日欄位
 
-```{r}
+```{r echo=FALSE}
 Sys.setlocale("LC_TIME", "English") #Set up the time format to English.
 w_data <- fread('C:/Users/joker/Google 雲端硬碟/GLORIA_個人處理/Weather_data/temp_20200809_corrected.csv') #The temperature data from datalogger
 w_data[,yyddhh:=as.POSIXct(timestamp,format="%Y-%m-%d %H:%M:%S",tz ="" )+8*60*60]
@@ -35,7 +35,7 @@ write.csv(w_data,'C:/Users/joker/Google 雲端硬碟/GLORIA_個人處理/Weather
 
 ## 處理 ERA5 資料
 概要：將ERA5的資料統整合併，日期轉換，並將數值轉換成一般常用單位(溫度為攝氏，雨量為mm)。
-```{r}
+```{r echo=FALSE}
 #the region and period most be text. The "region" is the region code, like "SYU" or "DAS". The "path" is the folder path of data.
 ERA_data <- function(region,path){
   Sys.setlocale("LC_TIME", "English") #Set up the time format to English.
@@ -60,14 +60,15 @@ for (i in c("SYU","DAS")){
 write.csv(result,'processing/ERA5_daily.csv')
 ```
 ## datalogger 資料整理並計算
-概要：將datalogger資料統整計算各個山頭、各方位的日均溫，刪除資料筆數未滿24小時者
-```{r}
+概要：將datalogger資料統整計算各個山頭、各方位的日均溫，刪除資料筆數未滿24小時者，
+並將datalogger資料與ERA5資料合併。
+```{r echo=FALSE}
 
 GLA_temp_d <- function(reg,rdata){ # 'reg' is the region code, 'rdata' is the datalogger data.
 t_h <- rdata[region==reg]
 daily <- t_h[,.(temp=mean(temperature),n=.N),
-                 by=.(region,summit,direction,year,month,day,datalogger)]
-daily[,date:=as.Date(paste(year,month,day,sep='-'))] #calculate the daily temp of each dir and each datalogger
+                 by=.(region,summit,direction,year,month,day,datalogger)]#calculate the daily temp of each dir and each datalogger
+daily[,date:=as.Date(paste(year,month,day,sep='-'))] 
 daily <- daily[n>23]#刪除未滿24小時的資料
 d_com <- daily[,.(temp=mean(temp),n=.N),
                        by=.(region,summit,direction,date)] #calculate the daily temp of each dir (combining the datalogger data)
@@ -78,42 +79,46 @@ reg <- c('DAS','SYU')
 era5_d <- fread('processing/ERA5_daily.csv')
 base_wdata <- rbindlist(lapply(reg, function(x){GLA_temp_d(x,w_data)}))
 
-setkey(Das_d,date)
-setkey(era5_d,date)
-wdata_c <- base_wdata[era5_d,on=.(date=date,region=region)]
-write.csv(Das_era,paste0('E:/忍者/GLORIA_個人處理/Weather_data/',reg,'/cobim_w_era_data.csv'))
+wdata_c <- base_wdata[era5_d,on=.(date=date,region=region)] #合併ERA5與datalogger資料
+write.csv(wdata_c,paste0('processing/cobim_w_era_data.csv'))
 #######################################################
 ```
-
+## 溫度資料推估
+概要:將資料合併之後，利用ERA5與各山頭各方位的日均溫資料建模。再利用建模完的資料填補datalogger的資料空缺。從而得到各山頭、各方位的完整溫度資料。由於ERA5資料網格為25km，所以目前一個目標區域只對應一個ERA5資料。如果區域內山峰差距超過25km，那Function必須重新建構。
 ```{r}
-wdata <- w_data
-lm_era_real <- function(reg,wdata,era5_d,S){ 
+wdata <- wdata_c
+####wdata is the weather data from the combination of datalogger and ERA5
+#### era5_d is the daily data from ERA5
+### S is the summit code vector 
+lm_era_real <- function(wdata,era5_d,S){ 
   m_fr <- NULL
   w_result <- NULL
   for (i in S){
-    i="YAT"
     rd <- wdata[summit==`i`]
     dir <- unique(rd[,direction])
     for (j in 1:length(unique(dir))){
         r2 <- rd[direction==dir[j],]
         m_t <- lm(temp~i.temp,data=r2)
         ######save the model coefficient
-        m_r <-cbind(data.table(model="Temp",summit=S[i],direction=dir[j]),glance(m_t)[1:6]) #glance from the package "broom"
+        m_r <-cbind(data.table(model="Temp",summit=i,direction=dir[j]),glance(m_t)[1:6]) #glance from the package "broom"
         m_fr <- rbind(m_fr,m_r)
         ################ merge the rdata and predict
-        pre <- merge(r2[,1:7],era5_d,on=.(date=date),all=T)
-    setnames(pre,'temp.y','i.temp')
-    pre[,temp.p:=predict(m_t,pre)]
-    pre[,summit:=S[i]][,direction:=dir[j]][,region:=reg]
-    pre[is.na(temp.x),c('temp.x','type'):=.(temp.p,"p") ]
-    pre[,10:14:=NULL]
-    pre[,8:=NULL]
+        pre <-r2[,1:6][era5_d[region==r2[1,region],2:4],
+                    on=.(date=date)]
+    pre[,temp.p:=predict(m_t,pre)] ###using model and ERA5 data to predict the temp. 
+    pre[,summit:=`i`][,direction:=dir[j]][,region:=r2[1,region]]
+    pre[is.na(temp),c('temp','type'):=.(temp.p,"p") ] #the 'p' mean the temp. was a predict value. 
+    pre[is.na(type),type:="r"] # the 'r' mean the temp. was a real temp.. 
+    pre[,i.region:=NULL]
     w_result <- rbind(w_result,pre)
-    }#finished j looping
-} #i looping
+    }#finished j loop
+  } #i loop
 return(list(m_fr,w_result))
 }
 S <- c('SEN','SUN','YAT','JNJ','DSH','TSW')
-result <- lm_era_real(reg,Das_era,era5_d,S)
+result <- lm_era_real(wdata_c,era5_d,S)
+write.csv(result[2],'result/temp_combin_daily.csv')
+write.csv(result[1],'result/temp_model_coefficent.csv')
+
 ```
 
