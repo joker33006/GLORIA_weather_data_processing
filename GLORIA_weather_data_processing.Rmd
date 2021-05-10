@@ -86,7 +86,8 @@ write.csv(wdata_c,paste0('processing/cobim_w_era_data.csv'))
 ## 溫度資料推估
 概要:將資料合併之後，利用ERA5與各山頭各方位的日均溫資料建模。再利用建模完的資料填補datalogger的資料空缺。從而得到各山頭、各方位的完整溫度資料。由於ERA5資料網格為25km，所以目前一個目標區域只對應一個ERA5資料。如果區域內山峰差距超過25km，那Function必須重新建構。
 ```{r}
-wdata <- wdata_c
+wdata_c <- fread('processing/cobim_w_era_data.csv')
+era5_d <- fread('processing/ERA5_daily.csv')
 ####wdata is the weather data from the combination of datalogger and ERA5
 #### era5_d is the daily data from ERA5
 ### S is the summit code vector 
@@ -103,7 +104,7 @@ lm_era_real <- function(wdata,era5_d,S){
         m_r <-cbind(data.table(model="Temp",summit=i,direction=dir[j]),glance(m_t)[1:6]) #glance from the package "broom"
         m_fr <- rbind(m_fr,m_r)
         ################ merge the rdata and predict
-        pre <-r2[,1:6][era5_d[region==r2[1,region],2:4],
+        pre <-r2[,1:6][era5_d[region==r2[1,region],2:5],
                     on=.(date=date)]
     pre[,temp.p:=predict(m_t,pre)] ###using model and ERA5 data to predict the temp. 
     pre[,summit:=`i`][,direction:=dir[j]][,region:=r2[1,region]]
@@ -119,6 +120,45 @@ S <- c('SEN','SUN','YAT','JNJ','DSH','TSW')
 result <- lm_era_real(wdata_c,era5_d,S)
 write.csv(result[2],'result/temp_combin_daily.csv')
 write.csv(result[1],'result/temp_model_coefficent.csv')
+
+```
+
+## 計算年、季節均溫與累積雨量
+概要：計算各山峰的年、季節以及月的均溫與累積雨量
+季節：12,1,2為冬季、3,4,5為春季、6,7,8為夏季、9,10,11為秋季
+
+```{r}
+base <-  fread('result/temp_combin_daily.csv')
+w_d <- base[,.(temp=mean(temp),rain=sum(rain)/4),
+            by=.(date,summit,region)]
+w_d[,date:=as.Date(date)]
+w_d[,year:=year(date)][,month:=month(date)]
+w_d[month%in%3:5,season:='Spring'][month%in%6:8,season:='Summer'][month%in%9:11,season:='Fall'][is.na(season),season:='Winter']
+w_y <- w_d[,.(temp=mean(temp),temp_sd=sd(temp),
+               rain=sum(rain)),
+            by=.(year,summit,region)] #for year
+w_d[,year.s:=year] 
+w_d[month==12,year.s:=year+1] # December was the winter group of next year
+
+w_s <- w_d[,.(temp=mean(temp),rain=sum(rain)),
+            by=.(year.s,season,summit,region)] #for season
+w_m <- w_d[,.(temp=mean(temp),rain=sum(rain)),
+            by=.(year,month,summit,region)] #for month
+write.csv(w_s,"result/2008-2020_temp_season.csv")
+write.csv(w_y,"result/2009-2020_temp_year.csv")
+write.csv(w_m,"result/2009-2020_temp_month.csv")
+
+```
+## 作圖
+```{r}
+w_y <- fread("result/2009-2020_temp_year.csv")
+ggplot(w_y[year!=2020&year>2009],aes(x=year,y=temp,color=summit))+
+  geom_point()+
+  geom_smooth(method = lm)+
+  labs(x='Year',y='Mean annual temperature (°C)')+
+  theme_classic()+
+  scale_x_continuous(breaks = seq(2010,2020,2))
+
 
 ```
 
